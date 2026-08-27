@@ -6,3 +6,12 @@ sample files/
 .vscode/
 __pycache__/
 .pytest_cache/
+sample_data/
+scripts/
+*.pyc
+BuildIQ_Meena_Assessment.zip
+node_modules/
+dist/
+
+output_boq.csv
+output_takeoff.json
