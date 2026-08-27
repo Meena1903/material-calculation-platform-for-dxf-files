@@ -1,0 +1,7 @@
+project_idea&referance/
+sample files/
+
+.env
+.venv
+.vscode/
+__pycache__/
