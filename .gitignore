@@ -9,10 +9,10 @@ __pycache__/
 sample_data/
 scripts/
 *.pyc
-BuildIQ_Meena_Assessment.zip
 node_modules/
 dist/
 
+uploads/
 outputs/
 output_boq.csv
 output_takeoff.json
