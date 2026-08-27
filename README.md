@@ -197,10 +197,14 @@ If the NVIDIA NIM API key is unavailable or rate-limited, the engine automatical
 - **macOS**: `chmod +x buildiq_engine/scripts/setup_mac.sh && ./buildiq_engine/scripts/setup_mac.sh`
 
 ### Manual Run:
+The backend package is imported as `backend.app...` across the codebase, so it must be run from the **project root** (`buildiq_engine`), not from inside `backend/`.
+
 ```bash
-# 1. Start Backend (FastAPI on Port 8000)
-cd buildiq_engine/backend
-..\..\.venv\Scripts\python app\main.py
+# 1. Start Backend (FastAPI on Port 8000) — run from the project root
+cd buildiq_engine
+& .venv\Scripts\python -m uvicorn backend.app.main:app --reload --port 8000
+# or, if uvicorn is available on PATH:
+# uvicorn backend.app.main:app --reload --port 8000
 
 # 2. Start Frontend (React on Port 5173)
 cd buildiq_engine/frontend

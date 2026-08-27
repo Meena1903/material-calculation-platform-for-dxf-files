@@ -13,5 +13,6 @@ BuildIQ_Meena_Assessment.zip
 node_modules/
 dist/
 
+outputs/
 output_boq.csv
 output_takeoff.json
