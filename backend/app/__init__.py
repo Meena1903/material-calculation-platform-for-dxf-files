@@ -1,1 +1,0 @@
-# SkillBridge backend package
