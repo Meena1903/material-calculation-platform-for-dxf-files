@@ -2,6 +2,7 @@
 
 import os
 from typing import List, Dict, Any, Optional
+from backend.app.core.logging_config import pipeline_logger
 from backend.app.models.schemas import TakeoffResult, NIMVisualExtractionResponse
 from backend.app.services.dxf_parser import dxf_parser
 from backend.app.services.pdf_vision_parser import pdf_vision_parser
@@ -19,6 +20,12 @@ class TakeoffExtractorPipeline:
         project_title: str = "Automated Pile Foundation Takeoff",
     ) -> TakeoffResult:
         """Run full extraction and calculation pipeline."""
+        pipeline_logger.info("=" * 80)
+        pipeline_logger.info(f"[PIPELINE STEP 1: INITIALIZATION] Starting Pipeline for '{project_title}'")
+        pipeline_logger.info(f"  - DXF Path: {dxf_path} (exists: {bool(dxf_path and os.path.exists(dxf_path))})")
+        pipeline_logger.info(f"  - PDF Path: {pdf_path} (exists: {bool(pdf_path and os.path.exists(pdf_path))})")
+        pipeline_logger.info("=" * 80)
+
         source_files = []
         cad_entities = []
         bounding_box = {}
@@ -27,18 +34,25 @@ class TakeoffExtractorPipeline:
 
         # 1. Parse DXF CAD vectors if provided
         if dxf_path and os.path.exists(dxf_path):
+            pipeline_logger.info(f"[PIPELINE STEP 2: DXF INGESTION] Ingesting CAD DXF from '{dxf_path}'")
             source_files.append(os.path.basename(dxf_path))
             dxf_data = dxf_parser.parse_dxf_file(dxf_path)
             cad_entities = dxf_data.get("cad_entities", [])
             bounding_box = dxf_data.get("bounding_box", {})
             raw_pile_specs = dxf_data.get("schedule", [])
+            pipeline_logger.info(
+                f"[PIPELINE STEP 2: DXF RESULTS] Extracted {len(cad_entities)} CAD entities, "
+                f"{len(raw_pile_specs)} schedule rows from DXF"
+            )
 
         # 2. Process PDF with Vision / HD crops if provided
         if pdf_path and os.path.exists(pdf_path):
+            pipeline_logger.info(f"[PIPELINE STEP 3: PDF VISION PROCESSING] Rendering PDF and extracting crops from '{pdf_path}'")
             source_files.append(os.path.basename(pdf_path))
             # Extract HD crops for schedule & rebar details
             crops = pdf_vision_parser.extract_hd_crops(pdf_path, dpi=250)
             if "schedule_table" in crops and os.path.exists(crops["schedule_table"]):
+                pipeline_logger.info(f"[PIPELINE STEP 3a: NIM EXTRACTION] Sending schedule crop '{crops['schedule_table']}' to NVIDIA NIM Vision")
                 b64_crop = pdf_vision_parser.encode_image_to_base64(crops["schedule_table"])
                 nim_info = await nim_vision_client.extract_schedule_from_crop(
                     image_base64=b64_crop, crop_name="schedule_table"
@@ -46,6 +60,7 @@ class TakeoffExtractorPipeline:
 
                 # If DXF didn't provide schedule or if we want to augment with NIM results:
                 if not raw_pile_specs and nim_info and nim_info.extracted_schedule:
+                    pipeline_logger.info(f"[PIPELINE STEP 3b: SCHEDULE MAPPING] Populating schedule from NIM Vision ({len(nim_info.extracted_schedule)} items)")
                     raw_pile_specs = [
                         {
                             "tag": item.pile_tag,
@@ -61,11 +76,13 @@ class TakeoffExtractorPipeline:
 
         # If neither file provided schedule (or standalone calculation), use ground truth baseline
         if not raw_pile_specs:
+            pipeline_logger.info(f"[PIPELINE STEP 4: BASELINE SCHEDULE] Using ground truth CAD schedule baseline ({len(dxf_parser.ground_truth_schedule)} items)")
             raw_pile_specs = dxf_parser.ground_truth_schedule
 
         # 3. Critical Engineering Constraint:
         # 100% of mathematical calculations, volume extrusions, BBS unit weights,
         # and manpower estimations execute strictly in native Python.
+        pipeline_logger.info(f"[PIPELINE STEP 5: NATIVE CALCULATION DISPATCH] Executing 100% deterministic native Python takeoff calculations")
         takeoff_result = calculator.calculate_full_takeoff(
             raw_pile_specs=raw_pile_specs,
             project_title=project_title,
@@ -75,6 +92,16 @@ class TakeoffExtractorPipeline:
         takeoff_result.cad_entities = cad_entities
         takeoff_result.bounding_box = bounding_box
         takeoff_result.nim_extraction_info = nim_info
+
+        pipeline_logger.info("=" * 80)
+        pipeline_logger.info(
+            f"[PIPELINE STEP 6: PIPELINE SUCCESS] Takeoff Complete: "
+            f"Total Piles: {takeoff_result.total_pile_count} | "
+            f"Concrete: {takeoff_result.concrete_takeoff.total_volume_m3:.3f} m³ | "
+            f"Steel: {takeoff_result.steel_takeoff.total_steel_mt:.4f} MT | "
+            f"Labor: {takeoff_result.manpower_estimation.total_mandays:.2f} Man-Days"
+        )
+        pipeline_logger.info("=" * 80)
 
         return takeoff_result
 

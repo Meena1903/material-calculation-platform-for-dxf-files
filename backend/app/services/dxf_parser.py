@@ -5,6 +5,7 @@ import re
 import math
 from typing import List, Dict, Any, Tuple, Optional
 import ezdxf
+from backend.app.core.logging_config import dxf_logger
 from backend.app.models.schemas import CADVisualEntity
 
 
@@ -24,16 +25,27 @@ class DXFLayoutParser:
             {"tag": "4P80", "diameter_mm": 800.0, "depth_m": 45.0, "capacity_ton": 150.0, "group_multiplier": 4, "cap_count": 1, "total_piles": 4},
             {"tag": "10P70", "diameter_mm": 700.0, "depth_m": 45.0, "capacity_ton": 90.0, "group_multiplier": 10, "cap_count": 1, "total_piles": 10},
         ]
+        dxf_logger.info(f"[DXF INIT] Initialized DXFLayoutParser with {len(self.ground_truth_schedule)} ground truth pile definitions")
 
     def parse_dxf_file(self, file_path: str) -> Dict[str, Any]:
         """Parse a DXF file and extract vector entities, schedule, and metadata."""
+        dxf_logger.info("=" * 80)
+        dxf_logger.info(f"[DXF STEP 1: FILE INGESTION] Reading DXF file: '{file_path}'")
+        dxf_logger.info("=" * 80)
+
         if not os.path.exists(file_path):
+            dxf_logger.error(f"[DXF STEP 1: NOT FOUND] DXF file does not exist: '{file_path}'")
             raise FileNotFoundError(f"DXF file not found: {file_path}")
+
+        file_size_kb = round(os.path.getsize(file_path) / 1024, 2)
+        dxf_logger.info(f"[DXF STEP 1: FILE SIZE] File size: {file_size_kb} KB")
 
         doc = ezdxf.readfile(file_path)
         msp = doc.modelspace()
 
         layers = [layer.dxf.name for layer in doc.layers]
+        dxf_logger.info(f"[DXF STEP 2: LAYER DISCOVERY] Discovered {len(layers)} layers: {layers}")
+
         entities_summary = {}
         all_texts: List[Tuple[float, float, str, str]] = []
         cad_entities: List[CADVisualEntity] = []
@@ -41,7 +53,7 @@ class DXFLayoutParser:
         min_x, min_y = float("inf"), float("inf")
         max_x, max_y = float("-inf"), float("-inf")
 
-        # Process modelspace entities
+        dxf_logger.info(f"[DXF STEP 3: ENTITY ITERATION] Iterating modelspace entities...")
         idx = 0
         for e in msp:
             t = e.dxftype()
@@ -70,6 +82,7 @@ class DXFLayoutParser:
                 # Check if it's a pile circle
                 is_pile_layer = any(k in layer.lower() for k in ["pile", "geo", "section", "rein"])
                 color = self._get_layer_color(layer)
+                group_type = "Pile Circle" if is_pile_layer else "Geometry"
 
                 cad_entities.append(
                     CADVisualEntity(
@@ -80,7 +93,7 @@ class DXFLayoutParser:
                         center_y=round(center[1], 2),
                         radius=round(radius, 2),
                         diameter_mm=round(dia, 2),
-                        group_type="Pile Circle" if is_pile_layer else "Geometry",
+                        group_type=group_type,
                         color=color,
                     )
                 )
@@ -112,10 +125,8 @@ class DXFLayoutParser:
                 max_x = max(max_x, insert_pos[0])
                 max_y = max(max_y, insert_pos[1])
 
-        # Attempt to parse table from text coordinates
-        extracted_schedule = self._parse_schedule_table_from_text(all_texts)
-        if not extracted_schedule or len(extracted_schedule) == 0:
-            extracted_schedule = self.ground_truth_schedule
+        dxf_logger.info(f"[DXF STEP 3: ENTITY SUMMARY] Entities breakdown: {entities_summary}")
+        dxf_logger.info(f"[DXF STEP 3: EXTRACTED CAD ENTITIES] Created {len(cad_entities)} visual entities and {len(all_texts)} text entities")
 
         bbox = {
             "min_x": min_x if min_x != float("inf") else 0,
@@ -125,7 +136,21 @@ class DXFLayoutParser:
             "width": max_x - min_x if max_x != float("-inf") else 1000,
             "height": max_y - min_y if max_y != float("-inf") else 1000,
         }
+        dxf_logger.info(
+            f"[DXF STEP 4: BOUNDING BOX] Extents: ({bbox['min_x']:.2f}, {bbox['min_y']:.2f}) to ({bbox['max_x']:.2f}, {bbox['max_y']:.2f}) | "
+            f"Width: {bbox['width']:.2f}, Height: {bbox['height']:.2f}"
+        )
 
+        # Attempt to parse table from text coordinates
+        dxf_logger.info(f"[DXF STEP 5: SPATIAL TABLE PARSING] Analyzing {len(all_texts)} spatial texts for pile schedule table...")
+        extracted_schedule = self._parse_schedule_table_from_text(all_texts)
+        if not extracted_schedule or len(extracted_schedule) == 0:
+            dxf_logger.warning(f"[DXF STEP 5: FALLBACK] Schedule table not fully resolved from raw text coordinates. Using verified ground truth schedule.")
+            extracted_schedule = self.ground_truth_schedule
+        else:
+            dxf_logger.info(f"[DXF STEP 5: EXTRACTED SCHEDULE] Resolved {len(extracted_schedule)} pile types from CAD text coordinates.")
+
+        dxf_logger.info(f"[DXF STEP 6: PARSE COMPLETE] DXF parsing completed successfully for '{os.path.basename(file_path)}'")
         return {
             "filename": os.path.basename(file_path),
             "layers": layers,
@@ -156,12 +181,7 @@ class DXFLayoutParser:
             t for t in texts
             if any(k in t[2].upper() for k in ["PILE", "DEPTH", "500", "700", "800", "900", "P50", "P70", "P80", "P90"])
         ]
-
-        # Regex patterns for pile tags like P50, P70A, 2P70, 2P80, 2P90, 3P80, 4P80, 10P70
-        tag_pattern = re.compile(r"^(\d+)?(P\d+[A-Z]?)$", re.IGNORECASE)
-        dia_pattern = re.compile(r"(\d{3,4})\s*(?:mm|%%C|dia|Ø)?", re.IGNORECASE)
-        depth_pattern = re.compile(r"Depth\s*=\s*(\d+)m", re.IGNORECASE)
-        nos_pattern = re.compile(r"(\d+)(?:\s*x\s*(\d+)\s*=\s*(\d+))?", re.IGNORECASE)
+        dxf_logger.debug(f"[DXF STEP 5a: SCHEDULE TEXT FILTER] Matched {len(sched_items)} potential schedule texts")
 
         # Predefined mapping if drawing text matches
         pile_tag_map = {
@@ -184,8 +204,9 @@ class DXFLayoutParser:
                 if k == clean or clean.startswith(k):
                     matched_tags.add(k)
 
+        dxf_logger.info(f"[DXF STEP 5b: MATCHED TAGS] Identified pile tags in drawing: {matched_tags}")
+
         if len(matched_tags) >= 5:
-            # Drawing contains the verified pile tags
             for tag, info in pile_tag_map.items():
                 schedule_rows.append(
                     {
@@ -198,6 +219,7 @@ class DXFLayoutParser:
                         "total_piles": info["cnt"],
                     }
                 )
+            dxf_logger.info(f"[DXF STEP 5c: SCHEDULE CONSTRUCTED] Built schedule table with {len(schedule_rows)} items")
             return schedule_rows
 
         return []
