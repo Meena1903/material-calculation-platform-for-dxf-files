@@ -47,9 +47,14 @@ class Settings(BaseSettings):
     MANPOWER_REBAR_PER_MT: float = 2.50            # 2.50 Man-Days per MT
     MANPOWER_CHIPPING_PER_PILE: float = 0.50       # 0.50 Man-Days per pile
 
-    # File storage paths
+    # File storage paths & upload limits (configured in MB via .env)
     UPLOAD_DIR: str = "uploads"
     OUTPUT_DIR: str = "outputs"
+    MAX_UPLOAD_SIZE_MB: int = 500  # Maximum upload file size in MB from .env
+
+    @property
+    def MAX_UPLOAD_SIZE_BYTES(self) -> int:
+        return self.MAX_UPLOAD_SIZE_MB * 1024 * 1024
 
     @field_validator("CORS_ORIGINS", mode="before")
     @classmethod

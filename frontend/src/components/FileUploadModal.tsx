@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { UploadCloud, FileText, X, Check, AlertCircle, Loader2 } from 'lucide-react';
+import { UploadCloud, FileText, X, AlertCircle, Loader2 } from 'lucide-react';
 import { apiClient } from '../services/api';
 import { TakeoffResult } from '../types/takeoff';
 
@@ -22,6 +22,13 @@ export const FileUploadModal: React.FC<FileUploadModalProps> = ({
 
   if (!isOpen) return null;
 
+  const formatFileSize = (bytes: number): string => {
+    if (bytes < 1024 * 1024) {
+      return `${(bytes / 1024).toFixed(1)} KB`;
+    }
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!dxfFile && !pdfFile) {
@@ -41,7 +48,13 @@ export const FileUploadModal: React.FC<FileUploadModalProps> = ({
       onSuccess(result);
       onClose();
     } catch (err: any) {
-      setError(err.response?.data?.detail || err.message || 'Failed to process drawing files.');
+      const errorMsg =
+        err.response?.data?.message ||
+        err.response?.data?.detail ||
+        (typeof err.response?.data === 'string' ? err.response.data : null) ||
+        err.message ||
+        'Failed to process drawing files.';
+      setError(errorMsg);
     } finally {
       setIsLoading(false);
     }
@@ -58,7 +71,7 @@ export const FileUploadModal: React.FC<FileUploadModalProps> = ({
             </div>
             <div>
               <h3 className="font-bold text-slate-100 text-base">Upload Foundation Drawings</h3>
-              <p className="text-xs text-slate-400">Process CAD vector (DXF) and high-res blueprint (PDF)</p>
+              <p className="text-xs text-slate-400">Process CAD vector (DXF) and high-res blueprint (PDF) up to 500MB</p>
             </div>
           </div>
           <button
@@ -106,10 +119,12 @@ export const FileUploadModal: React.FC<FileUploadModalProps> = ({
               />
               <FileText className="w-6 h-6 mx-auto text-slate-400 mb-1" />
               {dxfFile ? (
-                <div className="text-xs text-emerald-400 font-medium">{dxfFile.name}</div>
+                <div className="text-xs text-emerald-400 font-medium">
+                  {dxfFile.name} ({formatFileSize(dxfFile.size)})
+                </div>
               ) : (
                 <div className="text-xs text-slate-400">
-                  <span className="text-emerald-400 font-medium">Click to select DXF</span> or drag & drop
+                  <span className="text-emerald-400 font-medium">Click to select DXF</span> or drag & drop (up to 500MB)
                 </div>
               )}
             </div>
@@ -129,10 +144,12 @@ export const FileUploadModal: React.FC<FileUploadModalProps> = ({
               />
               <FileText className="w-6 h-6 mx-auto text-slate-400 mb-1" />
               {pdfFile ? (
-                <div className="text-xs text-emerald-400 font-medium">{pdfFile.name}</div>
+                <div className="text-xs text-emerald-400 font-medium">
+                  {pdfFile.name} ({formatFileSize(pdfFile.size)})
+                </div>
               ) : (
                 <div className="text-xs text-slate-400">
-                  <span className="text-emerald-400 font-medium">Click to select PDF</span> for vision parsing
+                  <span className="text-emerald-400 font-medium">Click to select PDF</span> for vision parsing (up to 500MB)
                 </div>
               )}
             </div>

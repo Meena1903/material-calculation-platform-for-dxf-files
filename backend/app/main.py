@@ -1,7 +1,9 @@
 """FastAPI Application Entrypoint for BuildIQ Pile Takeoff Engine."""
 
 import os
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, HTTPException, status
+from fastapi.responses import JSONResponse
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
@@ -14,6 +16,7 @@ app_logger.info(f"[APP STARTUP] Initializing {settings.APP_NAME}")
 app_logger.info(f"  - Environment: {settings.APP_ENV}")
 app_logger.info(f"  - Host: {settings.HOST}:{settings.PORT}")
 app_logger.info(f"  - Debug Mode: {settings.DEBUG}")
+app_logger.info(f"  - Max Upload Size: {settings.MAX_UPLOAD_SIZE_BYTES / (1024 * 1024):.0f} MB")
 app_logger.info(f"  - CORS Origins: {settings.CORS_ORIGINS}")
 app_logger.info("=" * 80)
 
@@ -33,6 +36,57 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# Global Exception Handlers
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    """Handle HTTP exceptions with structured JSON response and error logging."""
+    app_logger.warning(f"[HTTP EXCEPTION] {request.method} {request.url.path} -> {exc.status_code}: {exc.detail}")
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={
+            "error": True,
+            "status_code": exc.status_code,
+            "message": exc.detail,
+            "detail": exc.detail,
+            "path": request.url.path,
+        },
+    )
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    """Handle request schema validation errors."""
+    app_logger.warning(f"[VALIDATION ERROR] {request.method} {request.url.path} -> {exc.errors()}")
+    return JSONResponse(
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        content={
+            "error": True,
+            "status_code": 422,
+            "message": "Request payload validation failed.",
+            "detail": exc.errors(),
+            "details": exc.errors(),
+            "path": request.url.path,
+        },
+    )
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception):
+    """Catch-all for unhandled server exceptions."""
+    app_logger.error(f"[UNHANDLED EXCEPTION] {request.method} {request.url.path} -> {str(exc)}", exc_info=True)
+    return JSONResponse(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        content={
+            "error": True,
+            "status_code": 500,
+            "message": "An unexpected internal server error occurred.",
+            "detail": str(exc) if settings.DEBUG else "Internal server error.",
+            "path": request.url.path,
+        },
+    )
+
 
 # Include API Router
 app.include_router(api_router)
