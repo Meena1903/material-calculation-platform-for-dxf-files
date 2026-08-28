@@ -9,6 +9,7 @@ from fastapi.staticfiles import StaticFiles
 
 from backend.app.core.config import settings
 from backend.app.core.logging_config import app_logger
+from backend.app.core.langfuse_client import get_langfuse, flush as langfuse_flush
 from backend.app.api.endpoints import router as api_router
 
 app_logger.info("=" * 80)
@@ -18,6 +19,10 @@ app_logger.info(f"  - Host: {settings.HOST}:{settings.PORT}")
 app_logger.info(f"  - Debug Mode: {settings.DEBUG}")
 app_logger.info(f"  - Max Upload Size: {settings.MAX_UPLOAD_SIZE_BYTES / (1024 * 1024):.0f} MB")
 app_logger.info(f"  - CORS Origins: {settings.CORS_ORIGINS}")
+app_logger.info(
+    f"  - Langfuse Observability: "
+    f"{'ENABLED — ' + settings.LANGFUSE_BASE_URL if settings.LANGFUSE_SECRET_KEY else 'DISABLED (keys not set)'}"
+)
 app_logger.info("=" * 80)
 
 app = FastAPI(
@@ -36,6 +41,13 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+@app.on_event("shutdown")
+async def on_shutdown():
+    """Flush any buffered Langfuse events before the server exits."""
+    app_logger.info("[APP SHUTDOWN] Flushing Langfuse event buffer...")
+    langfuse_flush()
+    app_logger.info("[APP SHUTDOWN] Langfuse flush complete. Goodbye.")
 
 
 # Global Exception Handlers

@@ -1,8 +1,10 @@
 """Unified Takeoff Ingestion and Pipeline Orchestrator."""
 
 import os
+import uuid
 from typing import List, Dict, Any, Optional
 from backend.app.core.logging_config import pipeline_logger
+from backend.app.core.langfuse_client import create_trace
 from backend.app.models.schemas import TakeoffResult, NIMVisualExtractionResponse
 from backend.app.services.dxf_parser import dxf_parser
 from backend.app.services.pdf_vision_parser import pdf_vision_parser
@@ -21,11 +23,25 @@ class TakeoffExtractorPipeline:
     ) -> TakeoffResult:
         """Run full extraction and calculation pipeline with fault-tolerant error handling."""
         safe_title = str(project_title).strip() if project_title else "Automated Pile Foundation Takeoff"
+        session_id = str(uuid.uuid4())
+
         pipeline_logger.info("=" * 80)
         pipeline_logger.info(f"[PIPELINE STEP 1: INITIALIZATION] Starting Pipeline for '{safe_title}'")
         pipeline_logger.info(f"  - DXF Path: {dxf_path} (exists: {bool(dxf_path and os.path.exists(dxf_path))})")
         pipeline_logger.info(f"  - PDF Path: {pdf_path} (exists: {bool(pdf_path and os.path.exists(pdf_path))})")
+        pipeline_logger.info(f"  - Langfuse Session ID: {session_id}")
         pipeline_logger.info("=" * 80)
+
+        # Create one Langfuse trace per pipeline run — all NIM calls share it
+        langfuse_trace = create_trace(
+            name="takeoff-pipeline",
+            session_id=session_id,
+            metadata={
+                "project_title": safe_title,
+                "dxf_path": dxf_path,
+                "pdf_path": pdf_path,
+            },
+        )
 
         source_files = []
         cad_entities = []
@@ -60,7 +76,9 @@ class TakeoffExtractorPipeline:
                     pipeline_logger.info(f"[PIPELINE STEP 3a: NIM EXTRACTION] Sending schedule crop '{crops['schedule_table']}' to NVIDIA NIM Vision")
                     b64_crop = pdf_vision_parser.encode_image_to_base64(crops["schedule_table"])
                     nim_info = await nim_vision_client.extract_schedule_from_crop(
-                        image_base64=b64_crop, crop_name="schedule_table"
+                        image_base64=b64_crop,
+                        crop_name="schedule_table",
+                        trace=langfuse_trace,
                     )
 
                     # If DXF didn't provide schedule or if we want to augment with NIM results:

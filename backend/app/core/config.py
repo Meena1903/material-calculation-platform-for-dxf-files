@@ -52,6 +52,11 @@ class Settings(BaseSettings):
     OUTPUT_DIR: str = "outputs"
     MAX_UPLOAD_SIZE_MB: int = 500  # Maximum upload file size in MB from .env
 
+    # Langfuse — LLM Observability & Monitoring
+    LANGFUSE_SECRET_KEY: str = ""
+    LANGFUSE_PUBLIC_KEY: str = ""
+    LANGFUSE_BASE_URL: str = "https://cloud.langfuse.com"
+
     @property
     def MAX_UPLOAD_SIZE_BYTES(self) -> int:
         return self.MAX_UPLOAD_SIZE_MB * 1024 * 1024

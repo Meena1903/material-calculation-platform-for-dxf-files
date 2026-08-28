@@ -3,6 +3,11 @@
 Integrates with NVIDIA NIM APIs (e.g. meta/llama-3.2-90b-vision-instruct,
 mistralai/pixtral-12b-2409, or nvidia/neva-22b) strictly for visual parsing,
 table localization, and schema extraction structured via Pydantic.
+
+All inference calls are tracked via Langfuse for LLM observability:
+  - Prompt text, image metadata, model parameters
+  - Raw model output, token usage, latency
+  - Success / fallback status
 """
 
 import os
@@ -13,6 +18,7 @@ from typing import Dict, Any, Optional, List
 from pydantic import ValidationError
 from backend.app.core.config import settings
 from backend.app.core.logging_config import nim_logger
+from backend.app.core.langfuse_client import create_trace, track_nim_generation
 from backend.app.models.schemas import (
     NIMVisualExtractionItem,
     NIMVisualExtractionResponse,
@@ -93,25 +99,67 @@ class NvidiaNIMVisionClient:
             return {"status": "offline", "message": msg, "model": self.model}
 
     async def extract_schedule_from_crop(
-        self, image_base64: str, crop_name: str = "schedule_table"
+        self, image_base64: str, crop_name: str = "schedule_table", trace=None
     ) -> NIMVisualExtractionResponse:
-        """Send high-definition crop to NVIDIA NIM Vision model for structured schema extraction with multi-layer error handling."""
+        """Send high-definition crop to NVIDIA NIM Vision model for structured schema extraction.
+
+        Args:
+            image_base64: Base64-encoded PNG image of the drawing crop.
+            crop_name: Identifier for this crop region (used in Langfuse logs).
+            trace: Optional Langfuse Trace object for the current pipeline run.
+                   If None, a new trace is created for this single call.
+        """
         nim_logger.info("=" * 80)
         nim_logger.info(f"[LLM STEP 1: EXTRACTION START] Vision extraction requested for crop: '{crop_name}' | Model: '{self.model}'")
         nim_logger.info("=" * 80)
 
-        if not self.is_configured():
-            nim_logger.warning(
-                f"[LLM STEP 1: FALLBACK] NVIDIA API Key not configured. Using verified CAD deterministic extraction."
-            )
-            return self._get_fallback_extraction_response(
-                reason="NVIDIA API Key not configured. Using verified CAD deterministic extraction."
+        # Create a local Langfuse trace if none was passed in from the pipeline
+        if trace is None:
+            trace = create_trace(
+                name="nim-vision-extraction",
+                metadata={"crop_name": crop_name, "model": self.model},
             )
 
+        if not self.is_configured():
+            reason = "NVIDIA API Key not configured. Using verified CAD deterministic extraction."
+            nim_logger.warning(f"[LLM STEP 1: FALLBACK] {reason}")
+            # ── Langfuse: log unconfigured fallback as a generation ────────────
+            track_nim_generation(
+                trace=trace,
+                crop_name=crop_name,
+                model=self.model,
+                prompt_text="[NOT SENT — API key not configured]",
+                image_size_kb=0.0,
+                temperature=0.1,
+                max_tokens=2048,
+                start_time=time.time(),
+                end_time=time.time(),
+                response_text=None,
+                success=False,
+                error_reason=reason,
+                fallback_used=True,
+            )
+            return self._get_fallback_extraction_response(reason=reason)
+
         if not image_base64 or len(image_base64.strip()) == 0:
-            err_reason = f"Image base64 string is empty for crop '{crop_name}'"
-            nim_logger.error(f"[LLM STEP 1: EMPTY IMAGE] {err_reason}")
-            return self._get_fallback_extraction_response(reason=err_reason)
+            reason = f"Image base64 string is empty for crop '{crop_name}'"
+            nim_logger.error(f"[LLM STEP 1: EMPTY IMAGE] {reason}")
+            track_nim_generation(
+                trace=trace,
+                crop_name=crop_name,
+                model=self.model,
+                prompt_text="[NOT SENT — empty image]",
+                image_size_kb=0.0,
+                temperature=0.1,
+                max_tokens=2048,
+                start_time=time.time(),
+                end_time=time.time(),
+                response_text=None,
+                success=False,
+                error_reason=reason,
+                fallback_used=True,
+            )
+            return self._get_fallback_extraction_response(reason=reason)
 
         system_prompt = (
             "You are an expert Civil Engineering Drawing and Bar Bending Schedule (BBS) parser. "
@@ -193,13 +241,30 @@ class NvidiaNIMVisionClient:
                     headers=headers,
                     json=payload,
                 )
-                elapsed_s = round(time.time() - start_time, 2)
+                end_time = time.time()
+                elapsed_s = round(end_time - start_time, 2)
 
                 nim_logger.info(f"[LLM STEP 5: RESPONSE RECEIVED] HTTP Status: {response.status_code} in {elapsed_s}s")
 
                 if response.status_code != 200:
                     err_msg = f"NVIDIA NIM API error (HTTP {response.status_code}): {response.text[:300]}"
                     nim_logger.error(f"[LLM STEP 5: ERROR RESPONSE] {err_msg}")
+                    # ── Langfuse: log HTTP error ──────────────────────────────
+                    track_nim_generation(
+                        trace=trace,
+                        crop_name=crop_name,
+                        model=self.model,
+                        prompt_text=system_prompt,
+                        image_size_kb=b64_size_kb,
+                        temperature=0.1,
+                        max_tokens=2048,
+                        start_time=start_time,
+                        end_time=end_time,
+                        response_text=response.text[:500],
+                        success=False,
+                        error_reason=err_msg,
+                        fallback_used=True,
+                    )
                     return self._get_fallback_extraction_response(reason=err_msg)
 
                 data = response.json()
@@ -207,15 +272,49 @@ class NvidiaNIMVisionClient:
                 if not choices or not isinstance(choices, list) or len(choices) == 0:
                     err_msg = "NVIDIA NIM response contained no choices"
                     nim_logger.error(f"[LLM STEP 5: EMPTY CHOICES] {err_msg}")
+                    track_nim_generation(
+                        trace=trace,
+                        crop_name=crop_name,
+                        model=self.model,
+                        prompt_text=system_prompt,
+                        image_size_kb=b64_size_kb,
+                        temperature=0.1,
+                        max_tokens=2048,
+                        start_time=start_time,
+                        end_time=end_time,
+                        response_text=None,
+                        success=False,
+                        error_reason=err_msg,
+                        fallback_used=True,
+                    )
                     return self._get_fallback_extraction_response(reason=err_msg)
 
                 content = choices[0].get("message", {}).get("content", "").strip()
                 if not content:
                     err_msg = "NVIDIA NIM returned empty text content"
                     nim_logger.error(f"[LLM STEP 5: EMPTY CONTENT] {err_msg}")
+                    track_nim_generation(
+                        trace=trace,
+                        crop_name=crop_name,
+                        model=self.model,
+                        prompt_text=system_prompt,
+                        image_size_kb=b64_size_kb,
+                        temperature=0.1,
+                        max_tokens=2048,
+                        start_time=start_time,
+                        end_time=end_time,
+                        response_text=None,
+                        success=False,
+                        error_reason=err_msg,
+                        fallback_used=True,
+                    )
                     return self._get_fallback_extraction_response(reason=err_msg)
 
                 usage = data.get("usage", {})
+                prompt_tokens = usage.get("prompt_tokens", 0)
+                completion_tokens = usage.get("completion_tokens", 0)
+                total_tokens = usage.get("total_tokens", 0)
+
                 nim_logger.info(
                     f"[LLM STEP 6: RAW LLM OUTPUT] Usage metrics: {usage}\n"
                     f"Raw Response Content:\n"
@@ -240,6 +339,25 @@ class NvidiaNIMVisionClient:
                 except json.JSONDecodeError as jde:
                     err_msg = f"Failed to parse LLM response as JSON: {jde}. Raw snippet: {clean_content[:200]}"
                     nim_logger.error(f"[LLM JSON DECODE ERROR] {err_msg}")
+                    # ── Langfuse: log JSON parse failure ─────────────────────
+                    track_nim_generation(
+                        trace=trace,
+                        crop_name=crop_name,
+                        model=self.model,
+                        prompt_text=system_prompt,
+                        image_size_kb=b64_size_kb,
+                        temperature=0.1,
+                        max_tokens=2048,
+                        start_time=start_time,
+                        end_time=end_time,
+                        response_text=content,
+                        prompt_tokens=prompt_tokens,
+                        completion_tokens=completion_tokens,
+                        total_tokens=total_tokens,
+                        success=False,
+                        error_reason=err_msg,
+                        fallback_used=True,
+                    )
                     return self._get_fallback_extraction_response(reason=err_msg)
 
                 nim_logger.info(f"[LLM STEP 8: JSON PARSED] Successfully parsed JSON dictionary with keys: {list(parsed_json.keys())}")
@@ -249,7 +367,6 @@ class NvidiaNIMVisionClient:
                     extracted_items = []
                     for item in raw_items:
                         if isinstance(item, dict):
-                            # Defensive defaults for missing/invalid fields
                             extracted_items.append(
                                 NIMVisualExtractionItem(
                                     pile_tag=str(item.get("pile_tag", "P_UNK")),
@@ -275,6 +392,24 @@ class NvidiaNIMVisionClient:
                 except ValidationError as ve:
                     err_msg = f"Pydantic schema validation error on LLM response: {ve}"
                     nim_logger.error(f"[LLM VALIDATION ERROR] {err_msg}")
+                    track_nim_generation(
+                        trace=trace,
+                        crop_name=crop_name,
+                        model=self.model,
+                        prompt_text=system_prompt,
+                        image_size_kb=b64_size_kb,
+                        temperature=0.1,
+                        max_tokens=2048,
+                        start_time=start_time,
+                        end_time=end_time,
+                        response_text=content,
+                        prompt_tokens=prompt_tokens,
+                        completion_tokens=completion_tokens,
+                        total_tokens=total_tokens,
+                        success=False,
+                        error_reason=err_msg,
+                        fallback_used=True,
+                    )
                     return self._get_fallback_extraction_response(reason=err_msg)
 
                 nim_logger.info(
@@ -290,19 +425,86 @@ class NvidiaNIMVisionClient:
                         f"Confidence={item.confidence_score}"
                     )
 
+                # ── Langfuse: log successful generation ───────────────────────
+                track_nim_generation(
+                    trace=trace,
+                    crop_name=crop_name,
+                    model=self.model,
+                    prompt_text=system_prompt,
+                    image_size_kb=b64_size_kb,
+                    temperature=0.1,
+                    max_tokens=2048,
+                    start_time=start_time,
+                    end_time=end_time,
+                    response_text=content,
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                    total_tokens=total_tokens,
+                    success=True,
+                    fallback_used=False,
+                )
+
                 return validated_response
 
         except httpx.TimeoutException:
+            end_time = time.time()
             err_msg = f"NVIDIA NIM Vision inference request timed out after 45s (model: {self.model})"
             nim_logger.error(f"[LLM TIMEOUT] {err_msg}")
+            track_nim_generation(
+                trace=trace,
+                crop_name=crop_name,
+                model=self.model,
+                prompt_text=system_prompt,
+                image_size_kb=b64_size_kb,
+                temperature=0.1,
+                max_tokens=2048,
+                start_time=start_time,
+                end_time=end_time,
+                response_text=None,
+                success=False,
+                error_reason=err_msg,
+                fallback_used=True,
+            )
             return self._get_fallback_extraction_response(reason=err_msg)
         except httpx.ConnectError as ce:
+            end_time = time.time()
             err_msg = f"NVIDIA NIM Vision connection failed: {ce}"
             nim_logger.error(f"[LLM CONNECT ERROR] {err_msg}")
+            track_nim_generation(
+                trace=trace,
+                crop_name=crop_name,
+                model=self.model,
+                prompt_text=system_prompt,
+                image_size_kb=b64_size_kb,
+                temperature=0.1,
+                max_tokens=2048,
+                start_time=start_time,
+                end_time=end_time,
+                response_text=None,
+                success=False,
+                error_reason=err_msg,
+                fallback_used=True,
+            )
             return self._get_fallback_extraction_response(reason=err_msg)
         except Exception as e:
+            end_time = time.time()
             err_msg = f"Exception during NVIDIA NIM visual inference: {str(e)}"
             nim_logger.error(f"[LLM STEP 5: EXCEPTION] {err_msg}")
+            track_nim_generation(
+                trace=trace,
+                crop_name=crop_name,
+                model=self.model,
+                prompt_text=system_prompt,
+                image_size_kb=b64_size_kb,
+                temperature=0.1,
+                max_tokens=2048,
+                start_time=start_time,
+                end_time=end_time,
+                response_text=None,
+                success=False,
+                error_reason=err_msg,
+                fallback_used=True,
+            )
             return self._get_fallback_extraction_response(reason=err_msg)
 
     def _get_fallback_extraction_response(self, reason: str) -> NIMVisualExtractionResponse:
