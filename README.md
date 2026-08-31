@@ -1,4 +1,4 @@
-# BuildIQ AI — Automated Pile Foundation Takeoff Engine
+# material calculation platform for dxf files — Automated Pile Foundation Takeoff Engine
 
 [![Python](https://img.shields.io/badge/Language-Python%203.10%20--%203.14-3776AB.svg?logo=python&logoColor=white)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/Backend-FastAPI-009688.svg?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
