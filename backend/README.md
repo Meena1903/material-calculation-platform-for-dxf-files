@@ -1,4 +1,4 @@
-# BuildIQ AI — Automated Pile Foundation Takeoff Engine
+# material calculation platform for dxf files — Automated Pile Foundation Takeoff Engine
 
 > **Technical Assessment Submission**: Automated Pile Foundation Takeoff, Concrete Volumetrics, Bar Bending Schedule (BBS) Steel Tonnage, and Manpower Productivity Estimation from CAD (`.DXF`) and Blueprint (`.PDF`) Drawings.
 
